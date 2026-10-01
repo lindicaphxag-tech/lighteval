@@ -218,6 +218,12 @@ class TestBaseMetrics:
         )
         assert result[mc_prob_metric.metric_name] == pytest.approx(0.7)
 
+        # Sequence-level log probabilities can be far below the direct exp() range.
+        doc = Doc(query="Test query", choices=["A", "B"], gold_index=0, task_name="test")
+        model_response = ModelResponse(logprobs=[-1000.0, -1001.0])
+        result = mc_prob_metric.compute_sample(doc=doc, model_response=model_response)
+        assert result[mc_prob_metric.metric_name] == pytest.approx(1 / (1 + np.exp(-1)))
+
         doc = Doc(query="Test query", choices=["AA", "BB", "CCC"], gold_index=1, task_name="test")
         model_response = ModelResponse(logprobs=np.log([0.1**2, 0.35**2, 0.05**3]))
 
