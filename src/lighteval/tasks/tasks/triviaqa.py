@@ -22,11 +22,13 @@ paper:
 https://arxiv.org/abs/1705.03551
 """
 
-import string
+import numpy as np
 
-from lighteval.metrics.metrics import Metrics
+from lighteval.metrics.metrics_sample import ExactMatches
+from lighteval.metrics.normalizations import harness_triviaqa_normalizer
+from lighteval.metrics.utils.metric_utils import SampleLevelMetric
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
-from lighteval.tasks.requests import Doc
+from lighteval.tasks.requests import Doc, SamplingMethod
 
 
 def triviaqa_prompt(line, task_name: str = None):
@@ -38,10 +40,7 @@ def triviaqa_prompt(line, task_name: str = None):
                 ret.append(alias)
         return ret
 
-    list_of_candidates = [
-        alias.lower().translate(str.maketrans("", "", string.punctuation))
-        for alias in _remove_prefixes(line["answer"]["aliases"])
-    ]
+    list_of_candidates = [harness_triviaqa_normalizer(alias) for alias in _remove_prefixes(line["answer"]["aliases"])]
 
     return Doc(
         task_name=task_name,
@@ -49,6 +48,18 @@ def triviaqa_prompt(line, task_name: str = None):
         gold_index=0,
         choices=[list_of_candidates],
     )
+
+
+triviaqa_exact_match = SampleLevelMetric(
+    metric_name="em",
+    sample_level_fn=ExactMatches(
+        strip_strings=True,
+        normalize_pred=harness_triviaqa_normalizer,
+    ),
+    category=SamplingMethod.GENERATIVE,
+    corpus_level_fn=np.mean,
+    higher_is_better=True,
+)
 
 
 triviaqa = LightevalTaskConfig(
@@ -61,9 +72,9 @@ triviaqa = LightevalTaskConfig(
     few_shots_split=None,
     few_shots_select=None,
     generation_size=20,
-    metrics=[Metrics.exact_match],
+    metrics=[triviaqa_exact_match],
     stop_sequence=["\n", ".", ","],
-    version=0,
+    version=1,
 )
 
 TASKS_TABLE = [
