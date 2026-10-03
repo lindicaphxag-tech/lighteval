@@ -270,9 +270,11 @@ class LoglikelihoodAcc(SampleLevelComputation):
         """
         n_choices = len(doc.choices)
         choices_logprobs = model_response.logprobs[:n_choices]
-        unconditioned_logprobs = None
+        unconditioned_logprobs = model_response.unconditioned_logprobs
 
-        if len(model_response.logprobs) == n_choices * 2:
+        # Backward compatibility for details/fake responses produced before the
+        # dedicated ModelResponse field was wired into the pipeline.
+        if unconditioned_logprobs is None and len(model_response.logprobs) == n_choices * 2:
             unconditioned_logprobs = model_response.logprobs[n_choices : n_choices * 2]
 
         gold_ixs = as_list(doc.gold_index)
