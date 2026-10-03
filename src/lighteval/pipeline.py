@@ -375,9 +375,7 @@ class Pipeline:
                     pmi_indices, pmi_docs = self._pmi_docs(docs)
                     if pmi_docs:
                         unconditioned_outputs = self.model.loglikelihood(pmi_docs)
-                        self._attach_unconditioned_logprobs(
-                            model_outputs, pmi_indices, unconditioned_outputs
-                        )
+                        self._attach_unconditioned_logprobs(model_outputs, pmi_indices, unconditioned_outputs)
                     outputs[sampling_method] = model_outputs
                 case SamplingMethod.PERPLEXITY:
                     model_outputs = self.model.loglikelihood_rolling(docs)
