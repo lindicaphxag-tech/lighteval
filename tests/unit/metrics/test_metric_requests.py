@@ -159,6 +159,21 @@ def test_pmi_doc_strips_task_context_before_unconditioned_inference():
     assert unconditioned.task_name == doc.task_name
 
 
+def test_normalized_probability_uses_unconditioned_response_field():
+    metric = NormalizedMultiChoiceProbMetric(normalization=LogProbPMINorm())
+    model_response = ModelResponse(
+        logprobs=[-0.2, -0.4],
+        unconditioned_logprobs=[-0.9, -0.5],
+        output_tokens=[[0], [1]],
+    )
+    doc = Doc(query="q", choices=["A", "B"], gold_index=0)
+
+    result = metric.compute_sample(doc=doc, model_response=model_response)
+
+    # PMI scores are [0.7, 0.1], so choice A receives most probability mass.
+    assert result[metric.metric_name] > 0.5
+
+
 def test_pmi_request_with_logprob_metric():
     """
     Test that the PMI requests are correctly routed and computed, this ensures
