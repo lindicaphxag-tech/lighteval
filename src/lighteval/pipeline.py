@@ -316,8 +316,7 @@ class Pipeline:
 
             if doc.unconditioned_query is None:
                 raise ValueError(
-                    f"Task {doc.task_name} uses PMI normalization but document "
-                    f"{doc.id!r} has no unconditioned_query."
+                    f"Task {doc.task_name} uses PMI normalization but document {doc.id!r} has no unconditioned_query."
                 )
 
             pmi_indices.append(index)
@@ -340,12 +339,8 @@ class Pipeline:
                 f"expected {len(pmi_indices)}, got {len(unconditioned_outputs)}."
             )
 
-        for index, unconditioned_response in zip(
-            pmi_indices, unconditioned_outputs, strict=True
-        ):
-            model_outputs[index].unconditioned_logprobs = (
-                unconditioned_response.logprobs
-            )
+        for index, unconditioned_response in zip(pmi_indices, unconditioned_outputs, strict=True):
+            model_outputs[index].unconditioned_logprobs = unconditioned_response.logprobs
 
     async def _run_model_async(self):
         outputs = {}
@@ -360,9 +355,7 @@ class Pipeline:
                     pmi_indices, pmi_docs = self._pmi_docs(docs)
                     if pmi_docs:
                         unconditioned_outputs = await self.model.loglikelihood(pmi_docs)
-                        self._attach_unconditioned_logprobs(
-                            model_outputs, pmi_indices, unconditioned_outputs
-                        )
+                        self._attach_unconditioned_logprobs(model_outputs, pmi_indices, unconditioned_outputs)
                     outputs[sampling_method] = model_outputs
 
         return outputs
