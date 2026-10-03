@@ -25,7 +25,7 @@ import asyncio
 import collections
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import Enum, auto
 
@@ -34,6 +34,7 @@ from tqdm import tqdm
 
 from lighteval.logging.evaluation_tracker import EvaluationTracker
 from lighteval.metrics import apply_metric
+from lighteval.metrics.normalizations import LogProbPMINorm
 from lighteval.models.abstract_model import LightevalModel, ModelConfig
 from lighteval.models.model_loader import TransformersModel, load_model
 from lighteval.models.model_output import (
@@ -296,6 +297,56 @@ class Pipeline:
             )
             self.evaluation_tracker.details_logger.aggregate()
 
+    @staticmethod
+    def _metric_uses_pmi(metric) -> bool:
+        sample_level_fn = metric.sample_level_fn
+        normalization = getattr(sample_level_fn, "logprob_normalization", None)
+        if normalization is None:
+            normalization = getattr(sample_level_fn, "log_prob_normalization", None)
+        return isinstance(normalization, LogProbPMINorm)
+
+    def _pmi_docs(self, docs):
+        pmi_docs = []
+        pmi_indices = []
+
+        for index, doc in enumerate(docs):
+            task = self.tasks_dict[doc.task_name]
+            if not any(self._metric_uses_pmi(metric) for metric in task.metrics):
+                continue
+
+            if doc.unconditioned_query is None:
+                raise ValueError(
+                    f"Task {doc.task_name} uses PMI normalization but document "
+                    f"{doc.id!r} has no unconditioned_query."
+                )
+
+            pmi_indices.append(index)
+            pmi_docs.append(
+                replace(
+                    doc,
+                    query=doc.unconditioned_query,
+                    instruction=None,
+                    fewshot_samples=[],
+                )
+            )
+
+        return pmi_indices, pmi_docs
+
+    @staticmethod
+    def _attach_unconditioned_logprobs(model_outputs, pmi_indices, unconditioned_outputs):
+        if len(pmi_indices) != len(unconditioned_outputs):
+            raise RuntimeError(
+                "PMI unconditioned inference returned an unexpected number of responses: "
+                f"expected {len(pmi_indices)}, got {len(unconditioned_outputs)}."
+            )
+
+        for index, unconditioned_response in zip(
+            pmi_indices, unconditioned_outputs, strict=True
+        ):
+            model_outputs[index].unconditioned_logprobs = (
+                unconditioned_response.logprobs
+            )
+
     async def _run_model_async(self):
         outputs = {}
         for sampling_method, docs in self.sampling_docs.items():
@@ -306,6 +357,12 @@ class Pipeline:
                     outputs[sampling_method] = model_outputs
                 case SamplingMethod.LOGPROBS:
                     model_outputs = await self.model.loglikelihood(docs)
+                    pmi_indices, pmi_docs = self._pmi_docs(docs)
+                    if pmi_docs:
+                        unconditioned_outputs = await self.model.loglikelihood(pmi_docs)
+                        self._attach_unconditioned_logprobs(
+                            model_outputs, pmi_indices, unconditioned_outputs
+                        )
                     outputs[sampling_method] = model_outputs
 
         return outputs
@@ -322,6 +379,12 @@ class Pipeline:
                     outputs[sampling_method] = model_outputs
                 case SamplingMethod.LOGPROBS:
                     model_outputs = self.model.loglikelihood(docs)
+                    pmi_indices, pmi_docs = self._pmi_docs(docs)
+                    if pmi_docs:
+                        unconditioned_outputs = self.model.loglikelihood(pmi_docs)
+                        self._attach_unconditioned_logprobs(
+                            model_outputs, pmi_indices, unconditioned_outputs
+                        )
                     outputs[sampling_method] = model_outputs
                 case SamplingMethod.PERPLEXITY:
                     model_outputs = self.model.loglikelihood_rolling(docs)
