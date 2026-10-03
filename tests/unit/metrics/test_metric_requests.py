@@ -20,11 +20,16 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from lighteval.metrics.dynamic_metrics import LogLikelihoodAccMetric
+import math
+
+import pytest
+
+from lighteval.metrics.dynamic_metrics import LogLikelihoodAccMetric, NormalizedMultiChoiceProbMetric
 from lighteval.metrics.metrics import Metrics
 from lighteval.metrics.normalizations import LogProbPMINorm
 from lighteval.metrics.utils.metric_utils import Metric
 from lighteval.models.model_output import ModelResponse
+from lighteval.pipeline import Pipeline
 from lighteval.tasks.lighteval_task import LightevalTask, LightevalTaskConfig
 from lighteval.tasks.requests import Doc
 from lighteval.tasks.tasks.xstory_cloze import xstory_cloze_en
@@ -36,10 +41,21 @@ def dummy_prompt_fc(line, task_name: str = ""):
     return Doc(
         task_name=task_name,
         query=line["input_sentence_1"],
-        unconditioned_query="",
+        instruction="Instruction: ",
+        unconditioned_query="Answer:",
         gold_index=0,
         choices=["Hello", "World"],
     )
+
+
+class RecordingFakeModel(FakeModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.loglikelihood_calls = []
+
+    def loglikelihood(self, docs):
+        self.loglikelihood_calls.append(docs)
+        return super().loglikelihood(docs)
 
 
 def get_pmi_task(metrics: list[Metric]):
@@ -61,12 +77,18 @@ def test_pmi_request():
     """
     Test that the PMI requests are correctly routed and computed
     """
-    fake_model = FakeModel(
+    fake_model = RecordingFakeModel(
         loglikelihood_responses=[
             ModelResponse(
-                logprobs=[0.9, 0.2, 0.85, 0.1],
-                argmax_logits_eq_gold=[True, False, True, False],
-                output_tokens=[[0]],
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+            ModelResponse(
+                logprobs=[0.85, 0.1],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
                 input_tokens=[0],
             ),
         ]
@@ -79,6 +101,62 @@ def test_pmi_request():
     results = evaluation["results"]["pmi_test_task:0"]
     # Correct choice after norm should be the second one so 0 acc
     assert results[metric.metric_name] == 0
+    assert len(fake_model.loglikelihood_calls) == 2
+    assert fake_model.loglikelihood_calls[0][0].query != "Answer:"
+    assert fake_model.loglikelihood_calls[1][0].query == "Answer:"
+    assert fake_model.loglikelihood_calls[1][0].instruction is None
+    assert fake_model.loglikelihood_calls[1][0].fewshot_samples == []
+
+
+def test_non_pmi_logprob_metric_does_not_request_unconditioned_scores():
+    fake_model = RecordingFakeModel(
+        loglikelihood_responses=[
+            ModelResponse(
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+        ]
+    )
+
+    metric = LogLikelihoodAccMetric(normalization=None)
+    task = LightevalTask(get_pmi_task(metrics=[metric]))
+    results = fake_evaluate_task(task, fake_model, max_samples=1)["results"]["pmi_test_task:0"]
+
+    assert results[metric.metric_name] == 1
+    assert len(fake_model.loglikelihood_calls) == 1
+
+
+def test_pmi_doc_strips_task_context_before_unconditioned_inference():
+    metric = LogLikelihoodAccMetric(normalization=LogProbPMINorm())
+    task = LightevalTask(get_pmi_task(metrics=[metric]))
+
+    pipeline = Pipeline.__new__(Pipeline)
+    pipeline.tasks_dict = {"pmi_test_task|0": task}
+
+    fewshot = Doc(query="fewshot", choices=["A"], gold_index=0)
+    doc = Doc(
+        id="sample-0",
+        task_name="pmi_test_task|0",
+        query="conditioned question",
+        instruction="Follow this task instruction. ",
+        choices=["A", "B"],
+        gold_index=0,
+        unconditioned_query="Answer:",
+        fewshot_samples=[fewshot],
+    )
+
+    indices, unconditioned_docs = pipeline._pmi_docs([doc])
+
+    assert indices == [0]
+    assert len(unconditioned_docs) == 1
+    unconditioned = unconditioned_docs[0]
+    assert unconditioned.query == "Answer:"
+    assert unconditioned.instruction is None
+    assert unconditioned.fewshot_samples == []
+    assert unconditioned.choices == doc.choices
+    assert unconditioned.task_name == doc.task_name
 
 
 def test_pmi_request_with_logprob_metric():
@@ -86,12 +164,18 @@ def test_pmi_request_with_logprob_metric():
     Test that the PMI requests are correctly routed and computed, this ensures
     that metrics categories producing same requests are handled correctly
     """
-    fake_model = FakeModel(
+    fake_model = RecordingFakeModel(
         loglikelihood_responses=[
             ModelResponse(
-                logprobs=[0.9, 0.2, 0.85, 0.1],
-                argmax_logits_eq_gold=[True, False, True, False],
-                output_tokens=[[0]],
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+            ModelResponse(
+                logprobs=[0.85, 0.1],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
                 input_tokens=[0],
             ),
         ]
@@ -106,18 +190,51 @@ def test_pmi_request_with_logprob_metric():
     assert result[metrics[1].metric_name] == 1
 
 
+def test_pmi_normalized_probability_uses_unconditioned_scores():
+    fake_model = RecordingFakeModel(
+        loglikelihood_responses=[
+            ModelResponse(
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+            ModelResponse(
+                logprobs=[0.85, 0.1],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+        ]
+    )
+
+    metric = NormalizedMultiChoiceProbMetric(normalization=LogProbPMINorm())
+    task = LightevalTask(get_pmi_task(metrics=[metric]))
+    result = fake_evaluate_task(task, fake_model, max_samples=1)["results"]["pmi_test_task:0"]
+
+    expected = math.exp(0.05) / (math.exp(0.05) + math.exp(0.1))
+    assert result[metric.metric_name] == pytest.approx(expected)
+    assert len(fake_model.loglikelihood_calls) == 2
+
+
 def test_pmi_request_with_generative_metric():
     """
     Test that the PMI requests are correctly routed even with other metrics to compute
     This is mostly that results are mutated in place, which can quickly backfire if we don't
     do it in correct order (this got actually fixed in the past but we'll keep the test for now)
     """
-    fake_model = FakeModel(
+    fake_model = RecordingFakeModel(
         loglikelihood_responses=[
             ModelResponse(
-                logprobs=[0.9, 0.2, 0.85, 0.1],
-                argmax_logits_eq_gold=[True, False, True, False],
-                output_tokens=[[0]],
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+            ModelResponse(
+                logprobs=[0.85, 0.1],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
                 input_tokens=[0],
             ),
         ],
@@ -136,3 +253,4 @@ def test_pmi_request_with_generative_metric():
     results = fake_evaluate_task(task, fake_model, max_samples=1)["results"]["pmi_test_task:0"]
     assert results[metrics[0].metric_name] == 0
     assert results[metrics[1].metric_name] == 1
+    assert len(fake_model.loglikelihood_calls) == 2
