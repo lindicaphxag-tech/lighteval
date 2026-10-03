@@ -20,7 +20,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from lighteval.metrics.dynamic_metrics import LogLikelihoodAccMetric
+import math
+
+import pytest
+
+from lighteval.metrics.dynamic_metrics import LogLikelihoodAccMetric, NormalizedMultiChoiceProbMetric
 from lighteval.metrics.metrics import Metrics
 from lighteval.metrics.normalizations import LogProbPMINorm
 from lighteval.metrics.utils.metric_utils import Metric
@@ -104,7 +108,6 @@ def test_pmi_request():
     assert fake_model.loglikelihood_calls[1][0].fewshot_samples == []
 
 
-
 def test_non_pmi_logprob_metric_does_not_request_unconditioned_scores():
     fake_model = RecordingFakeModel(
         loglikelihood_responses=[
@@ -155,6 +158,7 @@ def test_pmi_doc_strips_task_context_before_unconditioned_inference():
     assert unconditioned.choices == doc.choices
     assert unconditioned.task_name == doc.task_name
 
+
 def test_pmi_request_with_logprob_metric():
     """
     Test that the PMI requests are correctly routed and computed, this ensures
@@ -186,18 +190,51 @@ def test_pmi_request_with_logprob_metric():
     assert result[metrics[1].metric_name] == 1
 
 
+def test_pmi_normalized_probability_uses_unconditioned_scores():
+    fake_model = RecordingFakeModel(
+        loglikelihood_responses=[
+            ModelResponse(
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+            ModelResponse(
+                logprobs=[0.85, 0.1],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+        ]
+    )
+
+    metric = NormalizedMultiChoiceProbMetric(normalization=LogProbPMINorm())
+    task = LightevalTask(get_pmi_task(metrics=[metric]))
+    result = fake_evaluate_task(task, fake_model, max_samples=1)["results"]["pmi_test_task:0"]
+
+    expected = math.exp(0.05) / (math.exp(0.05) + math.exp(0.1))
+    assert result[metric.metric_name] == pytest.approx(expected)
+    assert len(fake_model.loglikelihood_calls) == 2
+
+
 def test_pmi_request_with_generative_metric():
     """
     Test that the PMI requests are correctly routed even with other metrics to compute
     This is mostly that results are mutated in place, which can quickly backfire if we don't
     do it in correct order (this got actually fixed in the past but we'll keep the test for now)
     """
-    fake_model = FakeModel(
+    fake_model = RecordingFakeModel(
         loglikelihood_responses=[
             ModelResponse(
-                logprobs=[0.9, 0.2, 0.85, 0.1],
-                argmax_logits_eq_gold=[True, False, True, False],
-                output_tokens=[[0]],
+                logprobs=[0.9, 0.2],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
+                input_tokens=[0],
+            ),
+            ModelResponse(
+                logprobs=[0.85, 0.1],
+                argmax_logits_eq_gold=[True, False],
+                output_tokens=[[0], [1]],
                 input_tokens=[0],
             ),
         ],
@@ -216,3 +253,4 @@ def test_pmi_request_with_generative_metric():
     results = fake_evaluate_task(task, fake_model, max_samples=1)["results"]["pmi_test_task:0"]
     assert results[metrics[0].metric_name] == 0
     assert results[metrics[1].metric_name] == 1
+    assert len(fake_model.loglikelihood_calls) == 2
