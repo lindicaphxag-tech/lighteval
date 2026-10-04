@@ -428,3 +428,56 @@ class TestTransformersModelUseChatTemplate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeBatchEncoding(dict):
+    def to(self, device):
+        return self
+
+
+class _TupleStopTokenizer:
+    eos_token = "<eos>"
+
+    def __call__(self, inputs, **kwargs):
+        if isinstance(inputs, str):
+            return {"input_ids": [1, 2, 3]}
+        return _FakeBatchEncoding(
+            input_ids=torch.tensor([[1, 2, 3]]),
+            attention_mask=torch.tensor([[1, 1, 1]]),
+        )
+
+
+def test_padded_generation_accepts_tuple_stop_sequences():
+    model = TransformersModel.__new__(TransformersModel)
+    model.config = Mock(batch_size=1)
+    model._max_length = 16
+    model._device = torch.device("cpu")
+    model._add_special_tokens = True
+    model.generation_config_dict = {}
+    model.disable_tqdm = True
+    model.accelerator = None
+    model.use_chat_template = False
+    model._tokenizer = _TupleStopTokenizer()
+    model.prompt_manager = Mock()
+    model.prompt_manager.prepare_prompt.return_value = "prompt"
+    model._get_batch_size = Mock(return_value=1)
+    model._generate = Mock(return_value=[ModelResponse(text=["answer"])])
+
+    doc = Doc(
+        query="question",
+        choices=["answer"],
+        gold_index=0,
+        task_name="tuple-stop-test",
+        generation_size=2,
+        stop_sequences=("END", "STOP"),
+        num_samples=1,
+    )
+
+    responses = model._padded_greedy_until([doc])
+
+    assert len(responses) == 1
+    assert model._generate.call_args.kwargs["stop_tokens"] == [
+        "<eos>",
+        "END",
+        "STOP",
+    ]
