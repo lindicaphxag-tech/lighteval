@@ -454,7 +454,6 @@ def test_padded_generation_accepts_tuple_stop_sequences():
     model._device = torch.device("cpu")
     model._add_special_tokens = True
     model.generation_config_dict = {}
-    model.disable_tqdm = True
     model.accelerator = None
     model.use_chat_template = False
     model._tokenizer = _TupleStopTokenizer()
