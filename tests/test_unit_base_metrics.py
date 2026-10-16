@@ -238,6 +238,21 @@ class TestBaseMetrics:
         expected = 1.0 / (1.0 + np.exp(-1.0))
         assert result[metric.metric_name] == pytest.approx(expected)
 
+    @pytest.mark.parametrize("shift", [-1e2, -1e3, -1e4])
+    def test_mc_probability_is_invariant_to_finite_logprob_shift(self, shift):
+        doc = Doc(query="Test query", choices=["A", "B", "C"], gold_index=1, task_name="test")
+        base = np.array([-1.25, -2.0, -3.5])
+        metric = NormalizedMultiChoiceProbMetric()
+
+        base_result = metric.compute_sample(doc=doc, model_response=ModelResponse(logprobs=base))
+        shifted_result = metric.compute_sample(
+            doc=doc,
+            model_response=ModelResponse(logprobs=base + shift),
+        )
+
+        assert shifted_result[metric.metric_name] == pytest.approx(base_result[metric.metric_name], rel=1e-12)
+
+
     def test_acc(self):
         # Test without normalization
         doc = Doc(query="Test query", choices=["A", "B", "C", "D"], gold_index=0, task_name="test")
