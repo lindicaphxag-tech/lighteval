@@ -347,6 +347,10 @@ class NormalizedMultiChoiceProbability(SampleLevelComputation):
             if self.log_prob_normalization
             else choices_logprobs
         )
+        normalized_log_probs = np.asarray(normalized_log_probs)
+        max_log_prob = np.max(normalized_log_probs)
+        if np.isfinite(max_log_prob):
+            normalized_log_probs = normalized_log_probs - max_log_prob
         normalized_probs = np.exp(normalized_log_probs)
 
         normalized_probs = safe_divide(normalized_probs[gold_ixs], np.sum(normalized_probs))
